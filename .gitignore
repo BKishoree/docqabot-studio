@@ -1,3 +1,13 @@
 .env
 .venv/
 __pycache__/
+node_modules/
+web/dist/
+.pytest_cache/
+test-results/
+playwright-report/
+.coverage
+coverage/
+htmlcov/
+*.log
+.venv*/
