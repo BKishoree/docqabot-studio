@@ -79,11 +79,23 @@ def _format_mb(n_bytes: float) -> str:
     return f"{mb:.0f} MB" if abs(mb - round(mb)) < 1e-9 else f"{mb:.1f} MB"
 
 
-def file_too_large(size_bytes: int | None, limit_bytes: int) -> StudioError:
+def too_large_message(size_bytes: int | None, limit_bytes: int) -> str:
+    """User message for an oversized file. The shown size must visibly exceed the shown
+    limit (architect review v1, C1): 21,000,000 bytes is "20.03 MB", not "20.0 MB"."""
+    limit = _format_mb(limit_bytes)
     if size_bytes is None:
-        message = f"The file is too large. The limit is {_format_mb(limit_bytes)}."
-    else:
-        message = f"The file is {_format_mb(size_bytes)}. The limit is {_format_mb(limit_bytes)}."
+        return f"The file is larger than the {limit} limit."
+    size_mb = size_bytes / (1024 * 1024)
+    limit_mb = limit_bytes / (1024 * 1024)
+    for decimals in (1, 2):
+        shown = round(size_mb, decimals)
+        if shown > limit_mb:
+            return f"The file is {shown:.{decimals}f} MB. The limit is {limit}."
+    return f"The file is larger than the {limit} limit."
+
+
+def file_too_large(size_bytes: int | None, limit_bytes: int) -> StudioError:
+    message = too_large_message(size_bytes, limit_bytes)
     return StudioError("file_too_large", 413, message,
                        {"limit_bytes": limit_bytes, "size_bytes": size_bytes})
 

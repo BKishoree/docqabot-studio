@@ -54,7 +54,7 @@ All configuration comes from environment variables. Put them in `.env`, which co
 | `STUDIO_BIND_ADDR` | `127.0.0.1` | Host address the app is published on. `0.0.0.0` on a server (then set the login pair). |
 | `STUDIO_PORT` | `8000` | Host port for the app |
 | `STUDIO_AUTH_USER`, `STUDIO_AUTH_PASSWORD` | empty | Both set = one shared login (HTTP Basic) on every page and API call, except `/api/v1/health/live` |
-| `POSTGRES_PASSWORD` | `docqabot_local` | Database password. The default is only for a laptop where the database is bound to loopback. **Change it on any server.** Use only letters, digits and `- _ . ~` (it becomes part of the database URL). |
+| `POSTGRES_PASSWORD` | `docqabot_local` | Database password. The default is only for a laptop where the database is bound to loopback. **Change it on any server.** Use only letters, digits and `- _ . ~` (it becomes part of the database URL). It takes effect only when the database volume is first created; see [Changing the database password](#changing-the-database-password). |
 | `POSTGRES_USER`, `POSTGRES_DB` | `docqabot` | Database user and name |
 | `STUDIO_DB_BIND_ADDR`, `STUDIO_DB_PORT` | `127.0.0.1`, `5433` | Where the database port is published on the host (5433 avoids a local PostgreSQL on 5432) |
 | `STUDIO_MAX_UPLOAD_MB` | `20` | Largest file accepted |
@@ -74,7 +74,19 @@ You use the same image and the same compose files; only `.env` differs. On a Lin
 2. Create `.env` with at least `OPENAI_API_KEY`, a strong URL-safe `POSTGRES_PASSWORD`, `STUDIO_BIND_ADDR=0.0.0.0`, `STUDIO_AUTH_USER` and `STUDIO_AUTH_PASSWORD`.
 3. `docker compose up -d --build`, then check `docker compose ps` (the app reports `healthy`).
 
+Set `POSTGRES_PASSWORD` before the first `up`: it is only applied when the volume is created.
+
 The app logs a warning if it is published on a non-loopback address with the login off. Put a TLS-terminating reverse proxy in front of it; the app itself speaks plain HTTP. The only persistent state is the named Postgres volume, so the app container can be replaced at any time.
+
+### Changing the database password
+
+PostgreSQL reads `POSTGRES_PASSWORD` only when it initialises an empty volume. Changing the value in `.env` later does not change the password stored in an existing volume, and the app then fails to connect (the status screen shows the database as unavailable). To change it and keep your data:
+
+```bash
+docker compose exec db psql -U docqabot -d docqabot -c "ALTER USER docqabot PASSWORD 'new-password'"
+```
+
+Then set `POSTGRES_PASSWORD=new-password` in `.env` and run `docker compose up -d` so the app picks it up. Use your own `POSTGRES_USER`/`POSTGRES_DB` if you changed them; in demo mode add `-f compose.yaml -f compose.demo.yaml` to both commands. Alternatively, `docker compose down -v` deletes the volume and all its data, and the next `up` creates a new one with the new password.
 
 ## Developing
 

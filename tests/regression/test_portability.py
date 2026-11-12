@@ -94,3 +94,11 @@ def test_dockerfile_health_check_user_and_no_secrets():
 def test_dockerignore_keeps_secrets_and_tests_out():
     lines = set(_need(".dockerignore").read_text(encoding="utf-8").split())
     assert {".env", ".git", "tests", "e2e", "node_modules"} <= lines
+
+
+def test_C2_password_note_in_readme_and_env_example():
+    """Architect Review v1 C2: POSTGRES_PASSWORD applies only when the volume is first created."""
+    env = _need(".env.example").read_text(encoding="utf-8")
+    readme = _need("README.md").read_text(encoding="utf-8")
+    assert re.search(r"first created", env, re.I) and "ALTER USER" in env
+    assert re.search(r"(first created|initialises an empty volume)", readme, re.I) and "ALTER USER" in readme

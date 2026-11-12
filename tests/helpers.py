@@ -252,15 +252,27 @@ class TcpProxy:
         return self
 
     def stop(self) -> None:
+        # shutdown() before close(): on Linux, close() alone does not wake a thread blocked in
+        # accept()/recv(), so the listener kept accepting and relaying (CI failure, 2026-11-12).
+        import socket
+
         if self._server is not None:
+            try:
+                self._server.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
             self._server.close()
             self._server = None
+        if self._thread is not None:
+            self._thread.join(timeout=5)
+            self._thread = None
         with self._lock:
             for s in self._conns:
-                try:
-                    s.close()
-                except OSError:
-                    pass
+                for fn in (lambda: s.shutdown(socket.SHUT_RDWR), s.close):
+                    try:
+                        fn()
+                    except OSError:
+                        pass
             self._conns = []
 
 
