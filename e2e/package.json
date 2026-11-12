@@ -1,0 +1,13 @@
+{
+  "name": "docqabot-studio-e2e",
+  "private": true,
+  "description": "Playwright end-to-end tests against the demo compose stack (TESTER).",
+  "scripts": {
+    "test": "playwright test",
+    "report": "playwright show-report"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "4.14.0",
+    "@playwright/test": "1.65.0"
+  }
+}

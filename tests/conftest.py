@@ -209,14 +209,38 @@ def db_connect():
     return psycopg2.connect(TEST_DATABASE_URL, cursor_factory=RealDictCursor, connect_timeout=5)
 
 
+RUN_LOCK_KEY = 0x0D0C0AB0  # pg advisory lock: one pytest session at a time per test database
+RUN_LOCK_WAIT_S = float(os.environ.get("TEST_DB_LOCK_WAIT_S", "900"))
+
+
 @pytest.fixture(scope="session")
 def test_db():
+    """Reachable test database, held exclusively for this pytest session.
+
+    Two pytest runs against one database truncate each other's tables, so the session
+    takes a PostgreSQL advisory lock and waits (up to TEST_DB_LOCK_WAIT_S) for another run.
+    """
     try:
-        conn = db_connect()
+        lock_conn = db_connect()
     except Exception as exc:  # noqa: BLE001
         pytest.fail(f"test database not reachable at {_url_host(TEST_DATABASE_URL)}: {exc}")
-    conn.close()
-    return TEST_DATABASE_URL
+    lock_conn.autocommit = True
+    deadline = time.monotonic() + RUN_LOCK_WAIT_S
+    announced = False
+    with lock_conn.cursor() as cur:
+        while True:
+            cur.execute("SELECT pg_try_advisory_lock(%s) AS ok", (RUN_LOCK_KEY,))
+            if cur.fetchone()["ok"]:
+                break
+            if time.monotonic() > deadline:
+                lock_conn.close()
+                pytest.fail("another pytest run holds the test database lock; gave up waiting")
+            if not announced:
+                sys.stderr.write("\n[conftest] another test run is using the test database; waiting...\n")
+                announced = True
+            time.sleep(2)
+    yield TEST_DATABASE_URL
+    lock_conn.close()
 
 
 def truncate_all() -> None:

@@ -115,8 +115,20 @@ def sweep_orphans() -> int:
                    WHERE document_id = ANY(%s)""",
                 (ids,),
             )
+        # Outcome never recorded (process died between the core's commit and Studio's update)
+        cur.execute(
+            """UPDATE studio_document_meta m
+               SET processed_at = now(),
+                   error_code = CASE WHEN d.status = 'failed' THEN 'interrupted' ELSE NULL END
+               FROM documents d
+               WHERE d.id = m.document_id AND m.processed_at IS NULL
+               RETURNING m.document_id""",
+        )
+        unrecorded = [row["document_id"] for row in cur.fetchall()]
     if ids:
         log.warning("Marked %d interrupted document(s) as failed: %s", len(ids), ids)
+    if unrecorded:
+        log.warning("Recorded the outcome of %d document(s) left unrecorded: %s", len(unrecorded), unrecorded)
     return len(ids)
 
 

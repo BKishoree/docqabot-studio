@@ -281,3 +281,16 @@ def test_IMIG2_core_tables_untouched(clean_db, db, client):
         ("chunks", "chunk_index"),
         ("documents", "id"), ("documents", "filename"), ("documents", "status"), ("documents", "created_at"),
     ]
+
+
+def test_IORPH2_core_uploaded_processing_document_is_processing_failed(studio_app, clean_db, db):
+    """DESIGN v1.3 (d): a core-/upload document (no meta row) left in processing -> failed / processing_failed."""
+    from fastapi.testclient import TestClient
+
+    with db.cursor() as cur:
+        cur.execute("INSERT INTO documents (filename, status) VALUES ('core.txt', 'processing') RETURNING id")
+        doc_id = cur.fetchone()["id"]
+    with TestClient(studio_app) as c:
+        d = c.get(f"{API}/documents/{doc_id}").json()
+    assert d["status"] == "failed" and d["error"]["code"] == "processing_failed", d
+    assert d["size_bytes"] is None

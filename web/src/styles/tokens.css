@@ -1,0 +1,66 @@
+/* DocQABot Studio tokens. Direction: "highlighted photocopy" (see web/DESIGN_NOTES.md). */
+:root {
+  /* Paper and ink */
+  --paper: #f5f6f4;          /* photocopy white, cool, not cream */
+  --sheet: #ffffff;          /* raised sheet for tables, composer, dialogs */
+  --ink: #1a1c1e;            /* toner black, 16.4:1 on paper */
+  --ink-2: #4d5459;          /* secondary text, 7.3:1 on paper */
+  --ink-3: #646b70;          /* tertiary text / meta, 5.2:1 on paper */
+  --rule: #d5d8d6;           /* hairline rules */
+  --rule-strong: #b4b9b7;
+
+  /* Graphite rail */
+  --rail: #23282b;
+  --rail-2: #2e3438;         /* hover row */
+  --rail-ink: #eceeeb;
+  --rail-ink-2: #a9b0b4;     /* 6.9:1 on rail */
+  --rail-rule: #3a4145;
+
+  /* The highlighter: only for quoted evidence and "you are here" */
+  --mark: #ffe45c;
+  --mark-soft: #fff3a8;
+  --mark-ink: #1a1c1e;
+
+  /* Pens */
+  --pen-blue: #1f47b8;       /* links, focus, primary action, 7.5:1 on paper */
+  --pen-blue-hover: #18388f;
+  --pen-red: #b3261e;        /* errors and destructive, 6.1:1 on paper */
+  --pen-red-soft: #fbeceb;
+  --amber: #8a5a00;          /* processing / degraded text, 5.6:1 on paper */
+  --amber-soft: #fdf3dc;
+  --green: #276b3c;          /* ready / ok text, 6.2:1 on paper */
+  --green-soft: #e7f2ea;
+
+  /* Type */
+  --font-ui: 'Public Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-doc: 'Source Serif 4', Georgia, 'Times New Roman', serif;
+  --text-xs: 0.75rem;
+  --text-sm: 0.8125rem;
+  --text-base: 0.9375rem;
+  --text-md: 1.0625rem;
+  --text-lg: 1.375rem;
+  --text-xl: 1.75rem;
+
+  /* Space: 4px base */
+  --s1: 4px;
+  --s2: 8px;
+  --s3: 12px;
+  --s4: 16px;
+  --s5: 24px;
+  --s6: 32px;
+  --s7: 48px;
+  --s8: 64px;
+
+  --radius: 6px;
+  --radius-sm: 4px;
+  --shadow-sheet: 0 1px 2px rgb(26 28 30 / 0.06), 0 4px 12px rgb(26 28 30 / 0.05);
+  --shadow-dialog: 0 8px 28px rgb(26 28 30 / 0.22);
+
+  /* Motion: short and stepped, never floaty */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --t-fast: 120ms;
+  --t-med: 180ms;
+
+  --rail-w: 272px;
+  --measure: 760px;
+}

@@ -1,0 +1,33 @@
+# Demo mode override: simulated answers from the local OpenAI stub, no key needed.
+#   docker compose -f compose.yaml -f compose.demo.yaml up -d --build
+# Uses its own database volume: demo vectors must never mix with live ones.
+
+services:
+  openai-stub:
+    # Same image as `app` (built by the app service; building it twice in parallel collides).
+    image: docqabot-studio:local
+    pull_policy: never
+    command: ["python", "-m", "studio.stub", "--host", "0.0.0.0", "--port", "8001"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=4).status == 200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  app:
+    depends_on:
+      openai-stub:
+        condition: service_healthy
+    environment:
+      STUDIO_DEMO_MODE: "true"
+      STUDIO_STUB_URL: http://openai-stub:8001/v1
+
+  db:
+    volumes:
+      - docqabot_pgdata_demo:/var/lib/postgresql/data
+
+volumes:
+  docqabot_pgdata_demo:
+    name: docqabot_pgdata_demo

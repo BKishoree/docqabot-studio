@@ -1,0 +1,54 @@
+# DocQABot Studio, live mode. Runs unchanged on Docker Desktop (Windows/macOS) and Linux servers.
+#   docker compose up -d --build        start (needs OPENAI_API_KEY in .env)
+#   docker compose down                 stop, data kept in the named volume
+# Demo mode (no key): docker compose -f compose.yaml -f compose.demo.yaml up -d --build
+name: docqabot
+
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-docqabot}
+      POSTGRES_DB: ${POSTGRES_DB:-docqabot}
+      # Loopback-only default for a laptop. MUST be overridden in .env on any server.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-docqabot_local}
+    volumes:
+      - docqabot_pgdata:/var/lib/postgresql/data
+    ports:
+      - "${STUDIO_DB_BIND_ADDR:-127.0.0.1}:${STUDIO_DB_PORT:-5433}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  app:
+    build: .
+    image: docqabot-studio:local
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # POSTGRES_PASSWORD must be URL-safe (letters, digits, - _ . ~) because it is part of this URL.
+      DATABASE_URL: "postgresql://${POSTGRES_USER:-docqabot}:${POSTGRES_PASSWORD:-docqabot_local}@db:5432/${POSTGRES_DB:-docqabot}?connect_timeout=5&options=-c%20ivfflat.probes%3D100"
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      STUDIO_DEMO_MODE: ${STUDIO_DEMO_MODE:-false}
+      STUDIO_BIND_ADDR: ${STUDIO_BIND_ADDR:-127.0.0.1}
+      STUDIO_AUTH_USER: ${STUDIO_AUTH_USER:-}
+      STUDIO_AUTH_PASSWORD: ${STUDIO_AUTH_PASSWORD:-}
+      STUDIO_MAX_UPLOAD_MB: ${STUDIO_MAX_UPLOAD_MB:-20}
+      STUDIO_OPENAI_TIMEOUT_S: ${STUDIO_OPENAI_TIMEOUT_S:-60}
+      STUDIO_OPENAI_MAX_RETRIES: ${STUDIO_OPENAI_MAX_RETRIES:-1}
+      STUDIO_DB_STARTUP_RETRIES: ${STUDIO_DB_STARTUP_RETRIES:-30}
+      STUDIO_LOG_LEVEL: ${STUDIO_LOG_LEVEL:-INFO}
+    ports:
+      - "${STUDIO_BIND_ADDR:-127.0.0.1}:${STUDIO_PORT:-8000}:8000"
+    restart: unless-stopped
+
+volumes:
+  docqabot_pgdata:
+    name: docqabot_pgdata

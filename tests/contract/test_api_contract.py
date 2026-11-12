@@ -482,21 +482,29 @@ def test_CE_openai_rate_limited(client):
     assert client.get(f"{API}/conversations/{c['id']}").json()["message_count"] == 0
 
 
-def test_CE_internal_error_envelope_hides_internals(client, studio_app):
-    """internal_error via a test-only route added to the app for this test only (DESIGN 4.7)."""
+def test_CE_internal_error_envelope_hides_internals(studio_app, clean_db):
+    """internal_error via a test-only route on a fresh app built by studio.main.create_app (DESIGN 4.7).
+
+    The route is added before the app serves its first request, ahead of Studio's
+    /api/{rest:path} catch-all. Nothing is added to the production app object.
+    """
+    from fastapi.routing import APIRoute
+    from fastapi.testclient import TestClient
+
+    from tests.conftest import need_module
+
     secret = "TOPSECRET-internal-detail"
 
     def boom():
         raise RuntimeError(secret)
 
     path = f"{API}/__tester_internal_error__"
-    studio_app.add_api_route(path, boom, methods=["POST"])
-    try:
-        r = client.post(path)
-        err = assert_error(r, 500, "internal_error")
-        assert secret not in r.text and "Traceback" not in r.text, err
-    finally:
-        studio_app.router.routes[:] = [rt for rt in studio_app.router.routes if getattr(rt, "path", None) != path]
+    fresh = need_module("studio.main").create_app()
+    fresh.router.routes.insert(0, APIRoute(path, boom, methods=["POST"]))
+    with TestClient(fresh, raise_server_exceptions=False) as c:
+        r = c.post(path)
+    err = assert_error(r, 500, "internal_error")
+    assert secret not in r.text and "Traceback" not in r.text, err
 
 
 # ------------------------------------------------------------------ cross-cutting
@@ -522,3 +530,10 @@ def test_CX1_every_response_has_request_id(client):
 def test_CX2_unknown_api_route_is_404(client):
     r = client.get(f"{API}/no-such-route")
     assert r.status_code == 404
+
+
+def test_CX3_unsupported_method_on_existing_path_is_404_envelope(client):
+    """DESIGN v1.3 (c): unsupported method on an existing /api/v1 path -> 404 not_found envelope."""
+    assert_error(client.put(f"{API}/documents"), 404, "not_found")
+    assert_error(client.delete(f"{API}/conversations"), 404, "not_found")
+    assert_error(client.post(f"{API}/health"), 404, "not_found")

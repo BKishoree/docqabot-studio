@@ -51,6 +51,7 @@ async def lifespan(_app: FastAPI):
 
     db.reset_for_startup()
     openai_health.invalidate()
+    await run_in_threadpool(core_adapter.warm_up)
     for attempt in range(1, s.db_startup_retries + 1):
         if await run_in_threadpool(db.ensure_schema):
             log.info("Database ready.")

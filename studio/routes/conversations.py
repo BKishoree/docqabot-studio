@@ -254,7 +254,9 @@ def ask(conversation_id: str, body: AskRequest) -> dict:
             )
             summary = _fetch_summary(cur, conv_id)
             user_msg, assistant_msg = _load_messages(cur, conv_id, [user_id, assistant_id])
-    except psycopg2.errors.ForeignKeyViolation:
+    except psycopg2.errors.ForeignKeyViolation as exc:
+        log.warning("Ask could not be stored (%s): %s", type(exc).__name__,
+                    (exc.diag.constraint_name if exc.diag else None))
         raise not_found("The conversation")  # deleted while the answer was generated
 
     return {"conversation": summary, "user_message": user_msg, "assistant_message": assistant_msg}

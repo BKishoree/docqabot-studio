@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 import unicodedata
 from typing import Callable
 
@@ -43,6 +44,11 @@ _SELECT = """
 
 def to_document(row: dict) -> dict:
     status = row["status"] if row["status"] in ("processing", "ready", "failed") else "failed"
+    # Studio uploads (meta row present) stay "processing" until run_tracked has recorded the
+    # outcome: the core commits ready/failed a moment before Studio writes processed_at and
+    # error_code, and a poll in between must not see a failure without its reason.
+    if row.get("size_bytes") is not None and row.get("processed_at") is None:
+        status = "processing"
     error = None
     if status == "failed":
         code = row.get("error_code") if row.get("error_code") in ERROR_MESSAGES else "processing_failed"
@@ -129,39 +135,64 @@ def _classify_failure() -> str:
         return "processing_failed"
 
 
+RECORD_ATTEMPTS = 5
+RECORD_RETRY_INTERVAL_S = 2.0
+
+
 def run_tracked(doc_id: int, work: list[Callable[[], None]]) -> None:
-    """Run the core's processing, then record processed_at / error_code. Never raises."""
+    """Run the core's processing, then record processed_at / error_code. Never raises.
+
+    Recording is retried a few times (about 8 s in total) when the database is briefly
+    unavailable; after that the startup sweep records the outcome on the next start.
+    """
     for job in work:
         try:
             job()
         except Exception as exc:
             log.error("Core processing raised for document %s: %s", doc_id, type(exc).__name__)
-    try:
-        with db.connection() as conn, conn.cursor() as cur:
-            cur.execute("SELECT status FROM documents WHERE id = %s", (doc_id,))
-            row = cur.fetchone()
-        if row is None:
-            return  # deleted while processing
-        status = row["status"]
-        error_code = None
-        if status == "failed":
-            error_code = _classify_failure()
-            openai_health.invalidate()
-        elif status == "processing":
-            # The core could not even start (e.g. DB connection failed). Mark it failed.
-            error_code = "processing_failed"
-        with db.connection() as conn, conn.cursor() as cur:
-            if status == "processing":
-                cur.execute("UPDATE documents SET status = 'failed' WHERE id = %s AND status = 'processing'",
-                            (doc_id,))
-            cur.execute(
-                "UPDATE studio_document_meta SET processed_at = now(), error_code = %s WHERE document_id = %s",
-                (error_code, doc_id),
-            )
-        log.info("Document %s finished: %s%s", doc_id, "failed" if error_code else status,
-                 f" ({error_code})" if error_code else "")
-    except Exception as exc:
-        log.error("Could not record the outcome of document %s: %s", doc_id, type(exc).__name__)
+    for attempt in range(1, RECORD_ATTEMPTS + 1):
+        try:
+            _record_outcome(doc_id)
+            return
+        except StudioError as exc:  # database_unavailable
+            if attempt == RECORD_ATTEMPTS:
+                log.error("Could not record the outcome of document %s after %d attempts: %s",
+                          doc_id, attempt, exc.code)
+                return
+            time.sleep(RECORD_RETRY_INTERVAL_S)
+        except Exception as exc:
+            log.error("Could not record the outcome of document %s: %s", doc_id, type(exc).__name__)
+            return
+
+
+def _record_outcome(doc_id: int) -> None:
+    """Read the core's final status and store processed_at / error_code.
+
+    Raises StudioError(database_unavailable) when the database cannot be reached.
+    """
+    with db.connection() as conn, conn.cursor() as cur:
+        cur.execute("SELECT status FROM documents WHERE id = %s", (doc_id,))
+        row = cur.fetchone()
+    if row is None:
+        return  # deleted while processing
+    status = row["status"]
+    error_code = None
+    if status == "failed":
+        error_code = _classify_failure()
+        openai_health.invalidate()
+    elif status == "processing":
+        # The core could not even start (e.g. DB connection failed). Mark it failed.
+        error_code = "processing_failed"
+    with db.connection() as conn, conn.cursor() as cur:
+        if status == "processing":
+            cur.execute("UPDATE documents SET status = 'failed' WHERE id = %s AND status = 'processing'",
+                        (doc_id,))
+        cur.execute(
+            "UPDATE studio_document_meta SET processed_at = now(), error_code = %s WHERE document_id = %s",
+            (error_code, doc_id),
+        )
+    log.info("Document %s finished: %s%s", doc_id, "failed" if error_code else status,
+             f" ({error_code})" if error_code else "")
 
 
 # ---- routes ------------------------------------------------------------------------

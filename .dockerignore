@@ -1,0 +1,27 @@
+# Keep the build context small and secret-free.
+.git
+.github
+.env
+.env.*
+!.env.example
+.venv
+.venv*/
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.coverage
+coverage
+htmlcov
+*.log
+node_modules
+web/node_modules
+web/dist
+web/tests
+tests
+e2e
+test-results
+playwright-report
+docs
+.claude
+.impeccable
+web/.impeccable

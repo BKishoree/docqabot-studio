@@ -16,8 +16,11 @@ from studio.settings import load_settings
 log = logging.getLogger("studio.http")
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
-# Multipart framing around the file; the per-file limit itself is checked in the route.
-BODY_OVERHEAD_BYTES = 1024 * 1024
+# Multipart framing around the file (boundaries, part headers). Kept small so the
+# limit also holds for the core's POST /upload, which has no per-file check of its own.
+# One file part's framing is a few hundred bytes (boundaries + headers + a name of
+# at most a few hundred characters), so 2 KiB is enough and keeps the core path tight.
+BODY_OVERHEAD_BYTES = 2 * 1024
 
 
 def _new_request_id() -> str:

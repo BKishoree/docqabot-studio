@@ -41,6 +41,17 @@ def _apply_client_options() -> None:
 _apply_client_options()
 
 
+def warm_up() -> None:
+    """Build the SDK's lazily imported resource modules now (no network).
+
+    The first access to ``client.embeddings`` imports all of ``openai.resources``
+    (measured 3-4.6 s on this laptop); without this the first question pays it on
+    top of STUDIO_OPENAI_TIMEOUT_S.
+    """
+    for client in (core_embeddings.client, core_rag.client):
+        _ = client.embeddings, client.chat.completions, client.models
+
+
 def core_routes() -> list[APIRoute]:
     """The core's own API routes (/upload, /documents, /ask), not its /docs or /openapi.json."""
     return [r for r in core_main.app.routes if isinstance(r, APIRoute)]

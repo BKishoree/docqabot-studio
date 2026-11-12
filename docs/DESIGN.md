@@ -11,6 +11,9 @@
 
 | Version | Date | Change |
 | --- | --- | --- |
+| v1.5 | 2026-11-12 | 4.4: for Studio uploads, `status` is reported as `processing` until Studio has recorded the outcome (BACKEND's fix for a race found by test IS8). SDK warm-up from v1.4 is implemented as `core_adapter.warm_up()` and runs in the startup lifespan, not at import (2.3 wording updated). |
+| v1.4 | 2026-11-12 | Rulings on BACKEND's (f)-(i), all accepted: 4.6 request-body limit = file limit + 2 KiB; 8 `SKIP_WEB` build argument (default `false`, never for release/CI images); 8 compose `app` lists the `STUDIO_*` variables explicitly; 5.3 `POSTGRES_PASSWORD` must be URL-safe. 2.3 new rule: warm the OpenAI SDK's lazy resources at startup (measured 3-4 s cold first call). |
+| v1.3 | 2026-11-12 | Rulings on BACKEND's interpretations (a)-(e), all accepted: 4.4 `size_bytes` known from upload; 5.3 local `DATABASE_URL` default when unset; 4.1 wrong method on an `/api/v1` path → 404 `not_found`; 2.3 orphan sweep for core-uploaded documents reports `processing_failed`; 2.3/10.1 K4 core upload (PDF parsing) runs in a worker thread. |
 | v1.2 | 2026-11-12 | No contract change. Assumptions verified by BACKEND in B1 marked as verified (2.3 IVFFlat probes, 8 UTF-16 pip read, 10.1 K1 closed). |
 | v1.1 | 2026-11-12 | 4.7: stub importable as `studio.stub:app` (side-effect free), port/host via `--port`/`--host` or `STUB_PORT`/`STUB_HOST`; new trigger `__STUB_RATE_LIMIT__` → 429. 4.2/4.4: core-400 mapping made explicit; `upload_rejected` kept as defensive fallback, not reachable with `core-baseline`. 10.2: owner answers folded in (items 2, 3, 4, 7 decided). Answers to TESTER questions of 2026-11-12. |
 | v1.0 | 2026-11-12 | First version. |
@@ -145,11 +148,15 @@ Core symbols used, and nothing else:
 3. Else if `OPENAI_API_KEY` is unset or blank: set it in `os.environ` to the placeholder `not-configured` and record `openai_configured = False`. This is what lets the core import. The placeholder is never sent anywhere by Studio routes: the `require_openai` guard returns `503 openai_not_configured` first.
 4. Import `app.main` through the adapter.
 
-**Permitted runtime adjustment (exactly one).** After import, the adapter replaces `app.embeddings.client` and `app.rag.client` with `client.with_options(timeout=STUDIO_OPENAI_TIMEOUT_S, max_retries=STUDIO_OPENAI_MAX_RETRIES)`. Reason: the SDK default is a 10-minute timeout, which makes S8 unusable. No file changes; models, prompts and parameters are untouched. No other monkeypatching of core modules is allowed in production code. (Allowed by the owner on 2026-11-12, section 10.2.)
+**Permitted runtime adjustment (exactly one).** After import, the adapter replaces `app.embeddings.client` and `app.rag.client` with `client.with_options(timeout=STUDIO_OPENAI_TIMEOUT_S, max_retries=STUDIO_OPENAI_MAX_RETRIES)`. Reason: the SDK default is a 10-minute timeout, which makes S8 unusable. No file changes; models, prompts and parameters are untouched. No other monkeypatching of core modules is allowed in production code.
+
+**SDK warm-up (MUST).** During application startup (the lifespan, before the first request is served; implemented as `core_adapter.warm_up()` called from `studio/main.py` through `run_in_threadpool`, so `import studio.main` stays fast for in-process test clients), the adapter touches `.embeddings`, `.chat.completions` and `.models` on both adjusted clients. This makes no network call; it only loads the SDK's lazily imported resource modules. Reason, measured by the architect on 2026-11-12 with `openai==3.3.0` on the owner's laptop: the first use of these resources in a process costs about 3.5-4 s before the HTTP request is even sent. Without the warm-up, the first question or upload after every start is that much slower, and the configured timeout looks broken (a 1 s timeout made the request take 3.9 s; with warm-up it took 1.05 s). (Allowed by the owner on 2026-11-12, section 10.2.)
 
 **Document processing wrapper.** `POST /api/v1/documents` calls the core upload function with a private `BackgroundTasks`, writes the `studio_document_meta` row, then schedules `run_tracked(doc_id, core_tasks)`: run the core task, read the resulting `documents.status`, set `processed_at`, and on `failed` store an `error_code` chosen from a fresh OpenAI probe (`openai_auth`, `openai_unreachable`, otherwise `processing_failed`). The core only prints the exception, so the exact reason is not available; Studio does not capture stdout.
 
-**Orphaned work.** Background tasks die with the process. At startup Studio sets every document still in `processing` to `failed` with `error_code = 'interrupted'`.
+**Orphaned work.** Background tasks die with the process. At startup Studio sets every document still in `processing` to `failed` with `error_code = 'interrupted'`. Documents created through the core `/upload` route have no meta row, so they are set to `failed` and report the generic `processing_failed` (accepted; the Studio frontend never uses the core route).
+
+**Upload off the event loop.** The core upload function (which parses PDFs synchronously) is run in a worker thread with its own event loop (`run_in_threadpool` + `asyncio.run`), so a large PDF no longer blocks other requests or the health check through Studio's route. The core's own `/upload` route still runs on the event loop as shipped.
 
 **Resolving citations.** `retrieve_context` returns `content`, `source` (filename) and `similarity` only. The adapter resolves each to `document_id` and `chunk_index` with one query matching `d.filename` and `md5(c.content)` on ready documents, lowest `c.id` first. If two identical files were uploaded under the same name the first is cited; accepted for v1.
 
@@ -239,6 +246,7 @@ Frontend stack: React + Vite + TypeScript, React Router, TanStack Query for serv
 - IDs: documents and messages are integers; conversations are UUID strings.
 - Every response carries `X-Request-ID`.
 - List responses: `{"items": [...], "total": <int>}`.
+- Any path under `/api/` that has no route, and any unsupported method on an existing `/api/v1` path, returns `404 not_found` in the envelope (the API catch-all answers before a 405 could be produced; accepted for v1, the frontend never sends unsupported methods).
 - Unknown request fields are ignored. Response fields listed here are always present (value may be `null` where stated).
 
 ### 4.2 Error format (all `/api/v1` routes)
@@ -337,8 +345,9 @@ Model and retrieval values are informational constants mirroring the core.
 }
 ```
 
-- `status`: `"processing"` | `"ready"` | `"failed"` (the core's values).
-- `size_bytes`, `processed_at`: `null` for documents created through the core `/upload` route (no meta row) or still processing.
+- `status`: `"processing"` | `"ready"` | `"failed"` (the core's values). For a document uploaded through Studio, `status` stays `"processing"` until Studio has recorded the outcome (`processed_at`, and `error_code` on failure), even though the core has already committed `ready`/`failed`. This prevents a poll from seeing `failed` without its reason. If the process dies in that window, the startup sweep records the outcome (`interrupted` for failed documents).
+- `size_bytes`: known from the upload, so set from the moment the document exists (also while processing); `null` only for documents created through the core `/upload` route (no meta row).
+- `processed_at`: `null` while processing and for documents created through the core `/upload` route.
 - `chunk_count`: live count from `chunks`; `0` while processing or failed.
 - `error`: `null` unless `status` is `failed`, then `{"code": "...", "message": "..."}` with code `processing_failed` | `openai_auth` | `openai_unreachable` | `interrupted`.
 
@@ -440,7 +449,7 @@ Not used by the Studio frontend. Bodies and errors are FastAPI defaults (`{"deta
 | `GET /documents` | none | `200 [{"id": 1, "filename": "a.pdf", "status": "ready", "created_at": "2026-11-12T09:30:00"}]`, newest first |
 | `POST /ask` | `{"question": "str", "chat_history": [{"role": "user", "content": "..."}] \| null}` | `200 {"answer": "str", "sources": ["a.pdf"]}` |
 
-Two additive effects of running under Studio: the global request-size limit (`413`) and, when enabled, the Basic auth gate apply to these paths too. With no key configured these routes behave as the core does (the call fails); Studio does not add guards to them.
+Two additive effects of running under Studio: the global request-size limit (`413`; whole request body at most `STUDIO_MAX_UPLOAD_MB` + 2 KiB for multipart framing, so a core `/upload` of a file over the limit is refused before anything is stored) and, when enabled, the Basic auth gate apply to these paths too. With no key configured these routes behave as the core does (the call fails); Studio does not add guards to them.
 
 ### 4.7 OpenAI stub (`python -m studio.stub`, port 8001)
 
@@ -519,9 +528,9 @@ Migrations are idempotent and forward-only. A later change is a new numbered fil
 | --- | --- | --- |
 | `OPENAI_API_KEY` | none | Read by the core. Environment or untracked `.env` only. |
 | `OPENAI_BASE_URL` | unset (SDK default) | Read by the OpenAI SDK. Set by bootstrap in demo mode. |
-| `DATABASE_URL` | set in compose | Read by the core. Carries `options=-c ivfflat.probes=100`. |
+| `DATABASE_URL` | set in compose; when unset, bootstrap sets the local developer default `postgresql://docqabot:docqabot_local@127.0.0.1:5433/docqabot?connect_timeout=5&options=-c%20ivfflat.probes%3D100` and logs that it did | Read by the core. Carries `options=-c ivfflat.probes=100`. The fallback uses the same non-secret loopback password as item 6 in 10.2; if the owner removes that default, this fallback is removed too. |
 | `POSTGRES_USER` / `POSTGRES_DB` | `docqabot` / `docqabot` | Database container. |
-| `POSTGRES_PASSWORD` | `docqabot_local` | Database container. Default is for a loopback-only database; MUST be overridden on a server. |
+| `POSTGRES_PASSWORD` | `docqabot_local` | Database container. Default is for a loopback-only database; MUST be overridden on a server. MUST be URL-safe (letters, digits, `-` `_` `.` `~`) because compose puts it into `DATABASE_URL`. |
 | `STUDIO_DEMO_MODE` | `false` | `true` routes the core to the stub. |
 | `STUDIO_STUB_URL` | `http://openai-stub:8001/v1` | Where demo mode points `OPENAI_BASE_URL`. |
 | `STUDIO_BIND_ADDR` | `127.0.0.1` | Host address the app port is published on. `0.0.0.0` on a server. |
@@ -641,6 +650,12 @@ Requirement R10 governs this section: **one image, one compose file, unchanged o
 
 - `db`: `pgvector/pgvector:pg17`, named volume `docqabot_pgdata` at `/var/lib/postgresql/data`, `pg_isready` health check, published on `${STUDIO_DB_BIND_ADDR:-127.0.0.1}:${STUDIO_DB_PORT:-5433}`.
 - `app`: built image, `depends_on: db (service_healthy)`, published on `${STUDIO_BIND_ADDR:-127.0.0.1}:${STUDIO_PORT:-8000}:8000`, optional `env_file: .env` (`required: false`), `DATABASE_URL` assembled from the `POSTGRES_*` variables, `restart: unless-stopped`.
+
+Accepted implementation details (v1.4):
+
+- The Dockerfile has a build argument `SKIP_WEB` (default `false`). `true` builds an image without the frontend, for backend-only work; the app then serves its "web interface has not been built" notice. Release images, CI images and the images reviewed against AC1-AC25 MUST be built with the default.
+- The compose `app` service lists every `STUDIO_*` variable it uses in `environment:` with its default, in addition to the optional `env_file`. This makes the effective configuration readable from one file. `STUDIO_BIND_ADDR` is passed in so the app can log the non-loopback warning (2.7).
+- `POSTGRES_PASSWORD` is placed inside `DATABASE_URL` without encoding, so it MUST be URL-safe (letters, digits, `-` `_` `.` `~`). `.env.example` and the README say so.
 
 **`compose.demo.yaml`** (override): adds `openai-stub` (same image, `python -m studio.stub`, not published), sets `STUDIO_DEMO_MODE=true` on `app`, and switches `db` to the volume `docqabot_pgdata_demo`.
 
@@ -768,7 +783,7 @@ Review outcome per version: **approved** (all AC met), **approved with condition
 | K1 | OpenAI SDK behaviour assumed, not verified by the architect: `OPENAI_BASE_URL` honoured, `with_options` available, exception class names in the pinned `openai==3.3.0` | Closed 2026-11-12: BACKEND verified in B1 that `OPENAI_BASE_URL` is honoured, `with_options(timeout, max_retries)` works (SDK default read timeout 600 s, 2 retries), and `AuthenticationError`, `RateLimitError`, `BadRequestError`, `APIConnectionError`, `APITimeoutError`, `APIStatusError` exist in 3.3.0. Importing `app.main` without a key raises `OpenAIError`, which confirms the bootstrap placeholder in 2.3 is required. `pgvector/pgvector:pg17` pulls. |
 | K2 | IVFFlat with 1 probe misses chunks as data grows | `ivfflat.probes=100` through `DATABASE_URL`; regression test T-R3 |
 | K3 | Core embeds a whole document in one request: very large documents (roughly over 150,000 words, or a single paragraph over about 6,000 words) fail | Shown as `failed` with the generic reason; documented in README as a known limit; 20 MB upload cap |
-| K4 | Core parses PDFs synchronously inside an async route, so a large PDF blocks the process for its duration (health checks included) | Upload cap; health check timeouts generous (5 s, 5 retries); documented |
+| K4 | Core parses PDFs synchronously inside an async route, so a large PDF blocks the process for its duration (health checks included) | Studio's upload route runs the core upload in a worker thread (2.3), so only the core's own `/upload` route can still block; upload cap; health check timeouts generous (5 s, 5 retries); documented |
 | K5 | Follow-up questions are retrieved by their own words only (core behaviour), so "and for part-timers?" may retrieve poorly | Accepted; noted as an improvement idea (query rewriting would be Studio-side, not a core change) |
 | K6 | Core does not record why processing failed | Studio classifies from an OpenAI probe; otherwise generic message |
 | K7 | Demo-mode vectors are incompatible with live vectors | Separate named volumes per mode |
