@@ -1,0 +1,22 @@
+# Files used inside the Linux container or by Linux CI must keep LF line endings,
+# even on a Windows clone with core.autocrlf=true (BUG-007, design risk K10).
+# Explicit patterns only. Do NOT add "* text=auto": the frozen core requirements.txt
+# is UTF-16 and must never be normalised.
+compose*.yaml   text eol=lf
+Dockerfile      text eol=lf
+.dockerignore   text eol=lf
+.gitattributes  text eol=lf
+*.sh    text eol=lf
+*.sql   text eol=lf
+*.py    text eol=lf
+*.ini   text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.ts    text eol=lf
+*.tsx   text eol=lf
+*.js    text eol=lf
+*.json  text eol=lf
+*.md    text eol=lf
+*.css   text eol=lf
+*.html  text eol=lf
+.env.example text eol=lf
