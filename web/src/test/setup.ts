@@ -1,6 +1,10 @@
 import '@testing-library/jest-dom/vitest'
-import { cleanup } from '@testing-library/react'
+import { cleanup, configure } from '@testing-library/react'
 import { afterEach } from 'vitest'
+
+// BUG-006: the default 1 s for findBy/waitFor is too short on a loaded laptop or a CI runner.
+// Keep it below Vitest's testTimeout (vite.config.ts) so a miss reports the missing element.
+configure({ asyncUtilTimeout: 5000 })
 
 afterEach(() => {
   cleanup()

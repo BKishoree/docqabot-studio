@@ -19,6 +19,8 @@ export default defineConfig({
     include: ['src/**/*.test.{ts,tsx}', 'tests/**/*.test.{ts,tsx}'],
     pool: 'threads',
     maxWorkers: 2,
+    // Several 5 s findBy waits can run in one test (BUG-006); Vitest's default is 5 s.
+    testTimeout: 20_000,
     css: false,
   },
 })
