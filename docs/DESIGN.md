@@ -7,6 +7,14 @@
 | Status | Proposed for build. This is the contract for v1 and the checklist for review. |
 | Core baseline | tag `core-baseline` = `ab59f2e` (`app/*.py`, root `requirements.txt`) |
 
+**Changelog**
+
+| Version | Date | Change |
+| --- | --- | --- |
+| v1.2 | 2026-11-12 | No contract change. Assumptions verified by BACKEND in B1 marked as verified (2.3 IVFFlat probes, 8 UTF-16 pip read, 10.1 K1 closed). |
+| v1.1 | 2026-11-12 | 4.7: stub importable as `studio.stub:app` (side-effect free), port/host via `--port`/`--host` or `STUB_PORT`/`STUB_HOST`; new trigger `__STUB_RATE_LIMIT__` → 429. 4.2/4.4: core-400 mapping made explicit; `upload_rejected` kept as defensive fallback, not reachable with `core-baseline`. 10.2: owner answers folded in (items 2, 3, 4, 7 decided). Answers to TESTER questions of 2026-11-12. |
+| v1.0 | 2026-11-12 | First version. |
+
 Words used precisely in this document: **core** = the five files in `app/` plus root `requirements.txt`, frozen. **Studio** = everything new. **MUST / MUST NOT** = checked in review. Statements marked **(assumption)** were not verified by the architect and have a named task that verifies them.
 
 ---
@@ -137,7 +145,7 @@ Core symbols used, and nothing else:
 3. Else if `OPENAI_API_KEY` is unset or blank: set it in `os.environ` to the placeholder `not-configured` and record `openai_configured = False`. This is what lets the core import. The placeholder is never sent anywhere by Studio routes: the `require_openai` guard returns `503 openai_not_configured` first.
 4. Import `app.main` through the adapter.
 
-**Permitted runtime adjustment (exactly one).** After import, the adapter replaces `app.embeddings.client` and `app.rag.client` with `client.with_options(timeout=STUDIO_OPENAI_TIMEOUT_S, max_retries=STUDIO_OPENAI_MAX_RETRIES)`. Reason: the SDK default is a 10-minute timeout, which makes S8 unusable. No file changes; models, prompts and parameters are untouched. No other monkeypatching of core modules is allowed in production code. (This is listed for the owner in section 10.)
+**Permitted runtime adjustment (exactly one).** After import, the adapter replaces `app.embeddings.client` and `app.rag.client` with `client.with_options(timeout=STUDIO_OPENAI_TIMEOUT_S, max_retries=STUDIO_OPENAI_MAX_RETRIES)`. Reason: the SDK default is a 10-minute timeout, which makes S8 unusable. No file changes; models, prompts and parameters are untouched. No other monkeypatching of core modules is allowed in production code. (Allowed by the owner on 2026-11-12, section 10.2.)
 
 **Document processing wrapper.** `POST /api/v1/documents` calls the core upload function with a private `BackgroundTasks`, writes the `studio_document_meta` row, then schedules `run_tracked(doc_id, core_tasks)`: run the core task, read the resulting `documents.status`, set `processed_at`, and on `failed` store an `error_code` chosen from a fresh OpenAI probe (`openai_auth`, `openai_unreachable`, otherwise `processing_failed`). The core only prints the exception, so the exact reason is not available; Studio does not capture stdout.
 
@@ -149,7 +157,7 @@ Core symbols used, and nothing else:
 
 **Database not ready (S9).** Lifespan tries `init_db()` + `migrate()` up to `STUDIO_DB_STARTUP_RETRIES` times, 2 s apart, then starts anyway in a degraded state. `GET /api/v1/health` re-attempts schema setup whenever the database is reachable and the schema is not yet initialised. Every Studio query maps `psycopg2.OperationalError`/`InterfaceError` to `503 database_unavailable`.
 
-**IVFFlat recall.** The core creates an IVFFlat index (`lists = 100`) on an empty table and queries with the default `ivfflat.probes = 1`, which can silently miss relevant chunks once the planner starts using the index. Studio fixes this through configuration only: the default `DATABASE_URL` carries `?options=-c%20ivfflat.probes%3D100`, which scans all lists (exact results). **(assumption: libpq accepts this for an extension setting before the extension is loaded; verified by B2, guarded by regression test T-R3.)**
+**IVFFlat recall.** The core creates an IVFFlat index (`lists = 100`) on an empty table and queries with the default `ivfflat.probes = 1`, which can silently miss relevant chunks once the planner starts using the index. Studio fixes this through configuration only: the default `DATABASE_URL` carries `?options=-c%20ivfflat.probes%3D100`, which scans all lists (exact results). **(Verified by BACKEND in B1, 2026-11-12: accepted on pg17, `SHOW ivfflat.probes` = 100 before and after `CREATE EXTENSION`. Guarded by regression test T-R3.)**
 
 ### 2.4 Serving the frontend
 
@@ -253,7 +261,7 @@ Frontend stack: React + Vite + TypeScript, React Router, TanStack Query for serv
 | 400 | `empty_file` | Upload has zero bytes |
 | 400 | `invalid_filename` | Missing name, over 200 characters, or control characters |
 | 400 | `invalid_encoding` | `.txt`/`.md` is not UTF-8 |
-| 400 | `upload_rejected` | Any other 400 from the core upload; `message` is the core's detail |
+| 400 | `upload_rejected` | Any other 400 from the core upload; `message` is the core's detail. Defensive fallback only: with `core-baseline` no input reaches it (see 4.4) |
 | 401 | `unauthorized` | Auth enabled and credentials missing/wrong |
 | 404 | `not_found` | Unknown document or conversation id |
 | 409 | `no_ready_documents` | Question asked while no document has status `ready` |
@@ -341,7 +349,17 @@ Model and retrieval values are informational constants mirroring the core.
 | `GET /api/v1/documents/{id}` | none | `200 Document` | 404, 503 |
 | `DELETE /api/v1/documents/{id}` | none | `204`, no body. Allowed in any status. Chunks and meta cascade. | 404, 503 |
 
-Upload validation order: OpenAI configured → filename → extension → size → empty → core extraction. Nothing is stored unless all pass. The client learns the outcome by polling `GET /api/v1/documents` (2 s interval while any item is `processing`).
+Upload validation order: OpenAI configured → filename → extension → size → empty → core extraction. Nothing is stored unless all pass.
+
+Mapping of the core upload's outcomes (`app/main.py` at `core-baseline` raises exactly three 400s; Studio maps by the exact `detail` text):
+
+| Core outcome | Studio response |
+| --- | --- |
+| 400 `"File type not supported. ..."` | Not reached: Studio's extension check runs first. It MUST be case-insensitive, like the core's (`filename.lower()`), so `.PDF` is accepted by both. |
+| 400 `"File must be UTF-8 encoded text"` | `400 invalid_encoding` |
+| 400 `"No text could be extracted from the file"` | `422 no_extractable_text` |
+| Any other `HTTPException` 400 | `400 upload_rejected` with the core's detail as `message`. Unreachable with `core-baseline`; kept so a future core change degrades to a readable error instead of a 500. Not contract-tested end to end; tester records it as "not reachable by design" (a unit test of the mapping function is welcome but not required). |
+| Non-HTTP exception from the PDF parser (corrupt/encrypted PDF) | `422 unreadable_file` | The client learns the outcome by polling `GET /api/v1/documents` (2 s interval while any item is `processing`).
 
 ### 4.5 Conversations
 
@@ -431,7 +449,9 @@ Used by demo mode and by every automated test. Contract:
 - `GET /v1/models` → `200` list containing both model ids. `GET /health` → `200`.
 - `POST /v1/embeddings` → OpenAI-shaped response; accepts string or list input. Vector = 1536-dim hashed bag of words: lowercase, split on non-alphanumerics, drop a fixed English stop-word list, each token adds 1 at `sha256(token) mod 1536`, L2-normalised; a text with no tokens gets a fixed unit vector. Deterministic across runs and platforms. Consequence relied on by tests: a question sharing its content words with a chunk scores above 0.3; a question with no shared words scores 0.
 - `POST /v1/chat/completions` → OpenAI-shaped response whose content is deterministic: `"[Simulated answer] Based on <filenames found in '[Source: ...]' markers, comma separated>: <first 200 characters of the first source passage>"`. If earlier user/assistant messages are present, the text ends with `" (follow-up, <n> earlier messages)"`, which is how tests prove history was sent.
-- Failure injection, for tests: `Authorization: Bearer sk-stub-invalid` → `401` in OpenAI error shape on every route; input containing `__STUB_FAIL__` → `400`; input containing `__STUB_SLOW__` → 3 s delay.
+- Failure injection, for tests: `Authorization: Bearer sk-stub-invalid` → `401` in OpenAI error shape on every route; input containing `__STUB_FAIL__` → `400`; input containing `__STUB_SLOW__` → 3 s delay; input containing `__STUB_RATE_LIMIT__` → `429` in OpenAI error shape (`{"error": {"message": "...", "type": "requests", "param": null, "code": "rate_limit_exceeded"}}`), no `retry-after` header. "Input" means the embeddings `input` (any element) or any chat message `content`. A question containing a marker therefore fails at the question-embedding step, before chat. With `STUDIO_OPENAI_MAX_RETRIES=1` the SDK retries a 429 once, so the stub answers 429 every time (stateless). Expected Studio mapping: 401 → `502 openai_auth_failed`, 400 → `502 openai_error`, 429 → `503 openai_rate_limited`; nothing is stored.
+- Running it. The package `studio/stub/` exposes the ASGI app as **`studio.stub:app`**. Importing it MUST be side-effect free: no `studio.bootstrap`, no `app.*`, no environment mutation, no network, no database. It depends only on FastAPI/Starlette/pydantic and the standard library. `python -m studio.stub` (`studio/stub/__main__.py`) runs it with uvicorn; bind address and port from `--host`/`--port`, else `STUB_HOST`/`STUB_PORT`, else `0.0.0.0`/`8001` (the flag wins over the variable). Tests may run it in-process on a free port.
+- Not simulated: `internal_error` (500). It is covered by a Studio-side test that raises an unexpected exception through a test-only route or dependency override in the test suite, never by a production hook.
 
 ---
 
@@ -615,7 +635,7 @@ CI needs `fetch-depth: 0` and tags so T-R1 can see `core-baseline`. Results reco
 
 Requirement R10 governs this section: **one image, one compose file, unchanged on the Windows laptop and on a Linux server.**
 
-**Dockerfile** (multi-stage): `node:22` stage runs `npm ci && npm run build` in `web/`; final stage `python:3.13-slim`, installs `requirements-studio.txt`, copies `app/`, `studio/`, and the built frontend to `/srv/web`; non-root user; `EXPOSE 8000`; `CMD uvicorn studio.main:app --host 0.0.0.0 --port 8000`; `HEALTHCHECK` calling `/api/v1/health/live` with Python's standard library (no curl). The image contains no `.env`, no key, no data. **(assumption: pip reads the UTF-16 root `requirements.txt` directly; B1 verifies. If not, the Dockerfile converts a temporary copy inside the build stage; the repository file is never changed.)**
+**Dockerfile** (multi-stage): `node:22` stage runs `npm ci && npm run build` in `web/`; final stage `python:3.13-slim`, installs `requirements-studio.txt`, copies `app/`, `studio/`, and the built frontend to `/srv/web`; non-root user; `EXPOSE 8000`; `CMD uvicorn studio.main:app --host 0.0.0.0 --port 8000`; `HEALTHCHECK` calling `/api/v1/health/live` with Python's standard library (no curl). The image contains no `.env`, no key, no data. **(Verified by BACKEND in B1, 2026-11-12: pip reads the UTF-16 root `requirements.txt` directly; no conversion step is needed. The repository file is never changed.)**
 
 **`compose.yaml`** (live):
 
@@ -745,7 +765,7 @@ Review outcome per version: **approved** (all AC met), **approved with condition
 
 | # | Risk | Handling |
 | --- | --- | --- |
-| K1 | OpenAI SDK behaviour assumed, not verified by the architect: `OPENAI_BASE_URL` honoured, `with_options` available, exception class names in the pinned `openai==3.3.0` | B1 verifies first and reports; if false, the design is revised before further work |
+| K1 | OpenAI SDK behaviour assumed, not verified by the architect: `OPENAI_BASE_URL` honoured, `with_options` available, exception class names in the pinned `openai==3.3.0` | Closed 2026-11-12: BACKEND verified in B1 that `OPENAI_BASE_URL` is honoured, `with_options(timeout, max_retries)` works (SDK default read timeout 600 s, 2 retries), and `AuthenticationError`, `RateLimitError`, `BadRequestError`, `APIConnectionError`, `APITimeoutError`, `APIStatusError` exist in 3.3.0. Importing `app.main` without a key raises `OpenAIError`, which confirms the bootstrap placeholder in 2.3 is required. `pgvector/pgvector:pg17` pulls. |
 | K2 | IVFFlat with 1 probe misses chunks as data grows | `ivfflat.probes=100` through `DATABASE_URL`; regression test T-R3 |
 | K3 | Core embeds a whole document in one request: very large documents (roughly over 150,000 words, or a single paragraph over about 6,000 words) fail | Shown as `failed` with the generic reason; documented in README as a known limit; 20 MB upload cap |
 | K4 | Core parses PDFs synchronously inside an async route, so a large PDF blocks the process for its duration (health checks included) | Upload cap; health check timeouts generous (5 s, 5 retries); documented |
@@ -758,6 +778,17 @@ Review outcome per version: **approved** (all AC met), **approved with condition
 | K11 | Live-mode quality (real answers, real citations) cannot be tested by the team without a key | Smoke script runs against a live instance once the owner supplies a key; stated as not verified until then |
 
 ### 10.2 Decisions that belong to the owner
+
+**Answered by the owner on 2026-11-12** (relayed by the orchestrator; record in `01 Requirements/Owner Decisions.md`):
+
+| Item | Decision | Effect on this design |
+| --- | --- | --- |
+| 2. Client timeout adjustment | Allowed | 2.3 stands as written. |
+| 3. Shared login | Acceptable for v1; real accounts are a v2 idea | 2.7 stands as written. |
+| 4. Which server | Future target, no concrete server yet | R10 unchanged: any Linux server. The deployment strategy carries generic TLS/reverse-proxy notes, not host-specific ones. |
+| 7. Repository | `BKishoree/docqabot-studio`, public | GitHub Actions CI on standard hosted runners (free for public repos). Nothing secret may enter the repo, history included. |
+
+Still open, defaults apply until answered: 1 (live smoke run with a real key; asked near the end, no key in any file), 5 (20 MB), 6 (`docqabot_local` fallback).
 
 Assumption throughout: the owner has not yet provided an OpenAI key. Nothing in v1's build or tests needs one.
 
