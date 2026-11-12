@@ -1,0 +1,13 @@
+# TESTER: isolated demo stack for Playwright, so e2e clean-up never touches anyone else's data.
+#   STUDIO_PORT=8030 STUDIO_DB_PORT=5437 docker compose -p docqabot-test \
+#     -f compose.yaml -f compose.demo.yaml -f e2e/compose.e2e.yaml up -d --build --wait
+#   E2E_BASE_URL=http://127.0.0.1:8030 npx --prefix e2e playwright test
+#   ... down -v   (the e2e volume is disposable)
+services:
+  db:
+    volumes:
+      - docqabot_test_e2e_pgdata:/var/lib/postgresql/data
+
+volumes:
+  docqabot_test_e2e_pgdata:
+    name: docqabot_test_e2e_pgdata

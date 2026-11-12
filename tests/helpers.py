@@ -274,6 +274,17 @@ class TcpProxy:
                     except OSError:
                         pass
             self._conns = []
+        # Harness rule (RCA BUG-005): "stopped" must be checkable, so verify that nothing accepts any more.
+        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        probe.settimeout(1.0)
+        try:
+            probe.connect(("127.0.0.1", self.port))
+        except OSError:
+            pass  # refused (Linux) or timed out (Windows retries refused SYNs): stopped
+        else:
+            raise AssertionError(f"TcpProxy on port {self.port} still accepts connections after stop()")
+        finally:
+            probe.close()
 
 
 def db_url_via(port: int, base_url: str) -> str:
